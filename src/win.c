@@ -1076,8 +1076,6 @@ void win_on_win_size_change(session_t *ps, struct managed_win *w) {
 	    w->state == WSTATE_FADING) {
 		win_set_flags(w, WIN_FLAGS_IMAGES_STALE);
 		ps->pending_updates = true;
-	} else {
-		assert(w->state == WSTATE_UNMAPPED);
 	}
 	free_paint(ps, &w->shadow_paint);
 }
