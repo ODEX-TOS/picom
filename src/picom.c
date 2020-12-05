@@ -205,11 +205,15 @@ static inline void get_screen_region(session_t *ps, region_t *res) {
 
 void add_damage(session_t *ps, const region_t *damage) {
 	// Ignore damage when screen isn't redirected
-	if (!ps->redirected)
+	if (!ps->redirected) {
 		return;
+	}
 
-	if (!damage)
+	if (!damage) {
 		return;
+	}
+	log_trace("Adding damage: ");
+	dump_region(damage);
 	pixman_region32_union(ps->damage, ps->damage, (region_t *)damage);
 }
 
@@ -259,6 +263,8 @@ static bool run_fade(session_t *ps, struct managed_win **_w, long steps) {
 	}
 
 	if (steps) {
+		log_trace("Window %#010x (%s) opacity was: %lf", w->base.id, w->name,
+		          w->opacity);
 		if (w->opacity < w->opacity_target) {
 			w->opacity = clamp(w->opacity + ps->o.fade_in_step * (double)steps,
 			                   0.0, w->opacity_target);
@@ -266,6 +272,7 @@ static bool run_fade(session_t *ps, struct managed_win **_w, long steps) {
 			w->opacity = clamp(w->opacity - ps->o.fade_out_step * (double)steps,
 			                   w->opacity_target, 1);
 		}
+		log_trace("... updated to: %lf", w->opacity);
 	}
 
 	// Note even if opacity == opacity_target here, we still want to run preprocess
@@ -402,12 +409,20 @@ static void destroy_backend(session_t *ps) {
 		}
 
 		if (ps->backend_data) {
-			if (w->state == WSTATE_MAPPED) {
-				win_release_images(ps->backend_data, w);
-			} else {
-				assert(!w->win_image);
-				assert(!w->shadow_image);
+			// Unmapped windows could still have shadow images, but not pixmap
+			// images
+			assert(!w->win_image || w->state != WSTATE_UNMAPPED);
+			if (win_check_flags_any(w, WIN_FLAGS_IMAGES_STALE) &&
+			    w->state == WSTATE_MAPPED) {
+				log_warn("Stale flags set for mapped window %#010x "
+				         "during backend destruction",
+				         w->base.id);
+				assert(false);
 			}
+			// Unmapped windows can still have stale flags set, because their
+			// stale flags aren't handled until they are mapped.
+			win_clear_flags(w, WIN_FLAGS_IMAGES_STALE);
+			win_release_images(ps->backend_data, w);
 		}
 		free_paint(ps, &w->paint);
 	}
@@ -495,25 +510,12 @@ static bool initialize_backend(session_t *ps) {
 			}
 			auto w = (struct managed_win *)_w;
 			assert(w->state == WSTATE_MAPPED || w->state == WSTATE_UNMAPPED);
-			if (w->state == WSTATE_MAPPED) {
-				// We need to reacquire image
-				log_debug("Marking window %#010x (%s) for update after "
-				          "redirection",
-				          w->base.id, w->name);
-				if (w->shadow) {
-					struct color c = {
-					    .red = ps->o.shadow_red,
-					    .green = ps->o.shadow_green,
-					    .blue = ps->o.shadow_blue,
-					    .alpha = ps->o.shadow_opacity,
-					};
-					win_bind_shadow(ps->backend_data, w, c,
-					                ps->gaussian_map);
-				}
-
-				w->flags |= WIN_FLAGS_PIXMAP_STALE;
-				ps->pending_updates = true;
-			}
+			// We need to reacquire image
+			log_debug("Marking window %#010x (%s) for update after "
+			          "redirection",
+			          w->base.id, w->name);
+			win_set_flags(w, WIN_FLAGS_IMAGES_STALE);
+			ps->pending_updates = true;
 		}
 	}
 
@@ -707,22 +709,43 @@ static struct managed_win *paint_preprocess(session_t *ps, bool *fade_running) {
 		// Give up if it's not damaged or invisible, or it's unmapped and its
 		// pixmap is gone (for example due to a ConfigureNotify), or when it's
 		// excluded
-		if (!w->ever_damaged || w->g.x + w->g.width < 1 ||
-		    w->g.y + w->g.height < 1 || w->g.x >= ps->root_width ||
-		    w->g.y >= ps->root_height || w->state == WSTATE_UNMAPPED ||
-		    ((double)w->opacity * MAX_ALPHA < 1 && !w->blur_background) ||
-		    w->paint_excluded) {
+		if (w->state == WSTATE_UNMAPPED ||
+		    unlikely(w->base.id == ps->debug_window ||
+		             w->client_win == ps->debug_window)) {
+			to_paint = false;
+		} else if (!w->ever_damaged && w->state != WSTATE_UNMAPPING &&
+		           w->state != WSTATE_DESTROYING) {
+			// Unmapping clears w->ever_damaged, but the fact that the window
+			// is fading out means it must have been damaged when it was still
+			// mapped (because unmap_win_start will skip fading if it wasn't),
+			// so we still need to paint it.
+			log_trace("Window %#010x (%s) will not be painted because it has "
+			          "not received any damages",
+			          w->base.id, w->name);
+			to_paint = false;
+		} else if (unlikely(w->g.x + w->g.width < 1 || w->g.y + w->g.height < 1 ||
+		                    w->g.x >= ps->root_width || w->g.y >= ps->root_height)) {
+			log_trace("Window %#010x (%s) will not be painted because it is "
+			          "positioned outside of the screen",
+			          w->base.id, w->name);
+			to_paint = false;
+		} else if (unlikely((double)w->opacity * MAX_ALPHA < 1 && !w->blur_background)) {
 			/* TODO(yshui) for consistency, even a window has 0 opacity, we
 			 * still probably need to blur its background, so to_paint
 			 * shouldn't be false for them. */
+			log_trace("Window %#010x (%s) will not be painted because it has "
+			          "0 opacity",
+			          w->base.id, w->name);
 			to_paint = false;
-		}
-
-		if (w->base.id == ps->debug_window || w->client_win == ps->debug_window) {
+		} else if (w->paint_excluded) {
+			log_trace("Window %#010x (%s) will not be painted because it is "
+			          "excluded from painting",
+			          w->base.id, w->name);
 			to_paint = false;
-		}
-
-		if ((w->flags & WIN_FLAGS_IMAGE_ERROR) != 0) {
+		} else if (unlikely((w->flags & WIN_FLAGS_IMAGE_ERROR) != 0)) {
+			log_trace("Window %#010x (%s) will not be painted because it has "
+			          "image errors",
+			          w->base.id, w->name);
 			to_paint = false;
 		}
 		// log_trace("%s %d %d %d", w->name, to_paint, w->opacity,
@@ -740,6 +763,8 @@ static struct managed_win *paint_preprocess(session_t *ps, bool *fade_running) {
 			goto skip_window;
 		}
 
+		log_trace("Window %#010x (%s) will be painted", w->base.id, w->name);
+
 		// Calculate shadow opacity
 		w->shadow_opacity = ps->o.shadow_opacity * w->opacity * ps->o.frame_opacity;
 
@@ -756,10 +781,11 @@ static struct managed_win *paint_preprocess(session_t *ps, bool *fade_running) {
 			// w->mode == WMODE_SOLID or WMODE_FRAME_TRANS
 			region_t *tmp = rc_region_new();
 			if (w->mode == WMODE_SOLID) {
-				*tmp = win_get_bounding_shape_global_by_val(w);
+				*tmp =
+				    win_get_bounding_shape_global_without_corners_by_val(w);
 			} else {
 				// w->mode == WMODE_FRAME_TRANS
-				win_get_region_noframe_local(w, tmp);
+				win_get_region_noframe_local_without_corners(w, tmp);
 				pixman_region32_intersect(tmp, tmp, &w->bounding_shape);
 				pixman_region32_translate(tmp, w->g.x, w->g.y);
 			}
@@ -1354,16 +1380,12 @@ static void handle_new_windows(session_t *ps) {
 			}
 			auto mw = (struct managed_win *)new_w;
 			if (mw->a.map_state == XCB_MAP_STATE_VIEWABLE) {
-				// Have to map immediately instead of queue window update
-				// because we need the window's extent right now.
-				// We can do this because we are in the critical section.
-				map_win_start(ps, mw);
+				win_set_flags(mw, WIN_FLAGS_MAPPED);
 
 				// This window might be damaged before we called fill_win
 				// and created the damage handle. And there is no way for
 				// us to find out. So just blindly mark it damaged
 				mw->ever_damaged = true;
-				add_damage_from_win(ps, mw);
 			}
 		}
 	}
@@ -1894,6 +1916,7 @@ static session_t *session_init(int argc, char **argv, Display *dpy,
 	      c2_list_postprocess(ps, ps->o.blur_background_blacklist) &&
 	      c2_list_postprocess(ps, ps->o.invert_color_list) &&
 	      c2_list_postprocess(ps, ps->o.opacity_rules) &&
+	      c2_list_postprocess(ps, ps->o.rounded_corners_blacklist) &&
 	      c2_list_postprocess(ps, ps->o.focus_blacklist))) {
 		log_error("Post-processing of conditionals failed, some of your rules "
 		          "might not work");
@@ -2271,6 +2294,7 @@ static void session_destroy(session_t *ps) {
 	free_wincondlst(&ps->o.opacity_rules);
 	free_wincondlst(&ps->o.paint_blacklist);
 	free_wincondlst(&ps->o.unredir_if_possible_blacklist);
+	free_wincondlst(&ps->o.rounded_corners_blacklist);
 
 	// Free tracked atom list
 	{

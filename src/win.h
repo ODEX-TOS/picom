@@ -89,6 +89,15 @@ struct win {
 	/// Always false if `is_new` is true.
 	bool managed : 1;
 };
+
+struct win_geometry {
+	int16_t x;
+	int16_t y;
+	uint16_t width;
+	uint16_t height;
+	uint16_t border_width;
+};
+
 struct managed_win {
 	struct win base;
 	/// backend data attached to this window. Only available when
@@ -107,9 +116,10 @@ struct managed_win {
 	winstate_t state;
 	/// Window attributes.
 	xcb_get_window_attributes_reply_t a;
-	/// Reply of xcb_get_geometry, which returns the geometry of the window body,
-	/// excluding the window border.
-	xcb_get_geometry_reply_t g;
+	/// The geometry of the window body, excluding the window border region.
+	struct win_geometry g;
+	/// Updated geometry received in events
+	struct win_geometry pending_g;
 	/// Xinerama screen this window is on.
 	int xinerama_scr;
 	/// Window visual pict format
@@ -207,6 +217,9 @@ struct managed_win {
 	bool opacity_is_set;
 	/// Last window opacity value set by the rules.
 	double opacity_set;
+
+	/// Radius of rounded window corners
+	int corner_radius;
 
 	// Fading-related members
 	/// Override value of window fade state. Set by D-Bus method calls.
@@ -348,6 +361,7 @@ void add_damage_from_win(session_t *ps, const struct managed_win *w);
  * Return region in global coordinates.
  */
 void win_get_region_noframe_local(const struct managed_win *w, region_t *);
+void win_get_region_noframe_local_without_corners(const struct managed_win *w, region_t *);
 
 /// Get the region for the frame of the window
 void win_get_region_frame_local(const struct managed_win *w, region_t *res);
@@ -428,16 +442,48 @@ void win_clear_flags(struct managed_win *w, uint64_t flags);
 bool win_check_flags_any(struct managed_win *w, uint64_t flags);
 /// Returns true if all of the flags in `flags` are set
 bool win_check_flags_all(struct managed_win *w, uint64_t flags);
-/// Mark a property as stale for a window
-void win_set_property_stale(struct managed_win *w, xcb_atom_t prop);
+/// Mark properties as stale for a window
+void win_set_properties_stale(struct managed_win *w, const xcb_atom_t *prop, int nprops);
+
+static inline attr_unused void win_set_property_stale(struct managed_win *w, xcb_atom_t prop) {
+	return win_set_properties_stale(w, (xcb_atom_t[]){prop}, 1);
+}
 
 /// Free all resources in a struct win
 void free_win_res(session_t *ps, struct managed_win *w);
+
+static inline void win_region_remove_corners(const struct managed_win *w, region_t *res) {
+	region_t corners;
+	pixman_region32_init_rects(
+	    &corners,
+	    (rect_t[]){
+	        {.x1 = 0, .y1 = 0, .x2 = w->corner_radius, .y2 = w->corner_radius},
+	        {.x1 = 0, .y1 = w->heightb - w->corner_radius, .x2 = w->corner_radius, .y2 = w->heightb},
+	        {.x1 = w->widthb - w->corner_radius, .y1 = 0, .x2 = w->widthb, .y2 = w->corner_radius},
+	        {.x1 = w->widthb - w->corner_radius,
+	         .y1 = w->heightb - w->corner_radius,
+	         .x2 = w->widthb,
+	         .y2 = w->heightb},
+	    },
+	    4);
+	pixman_region32_subtract(res, res, &corners);
+	pixman_region32_fini(&corners);
+}
 
 static inline region_t attr_unused win_get_bounding_shape_global_by_val(struct managed_win *w) {
 	region_t ret;
 	pixman_region32_init(&ret);
 	pixman_region32_copy(&ret, &w->bounding_shape);
+	pixman_region32_translate(&ret, w->g.x, w->g.y);
+	return ret;
+}
+
+static inline region_t
+win_get_bounding_shape_global_without_corners_by_val(struct managed_win *w) {
+	region_t ret;
+	pixman_region32_init(&ret);
+	pixman_region32_copy(&ret, &w->bounding_shape);
+	win_region_remove_corners(w, &ret);
 	pixman_region32_translate(&ret, w->g.x, w->g.y);
 	return ret;
 }

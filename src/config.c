@@ -33,7 +33,7 @@ bool parse_long(const char *s, long *dest) {
 		log_error("Invalid number: %s", s);
 		return false;
 	}
-	while (isspace(*endptr))
+	while (isspace((unsigned char)*endptr))
 		++endptr;
 	if (*endptr) {
 		log_error("Trailing characters: %s", s);
@@ -74,7 +74,7 @@ const char *parse_readnum(const char *src, double *dest) {
 		log_error("No number found: %s", src);
 		return src;
 	}
-	while (*pc && (isspace(*pc) || *pc == ',')) {
+	while (*pc && (isspace((unsigned char)*pc) || *pc == ',')) {
 		++pc;
 	}
 	*dest = val;
@@ -161,7 +161,7 @@ conv *parse_blur_kern(const char *src, const char **endptr, bool *hasneg) {
 
 	// Detect trailing characters
 	for (; *pc && *pc != ';'; pc++) {
-		if (!isspace(*pc) && *pc != ',') {
+		if (!isspace((unsigned char)*pc) && *pc != ',') {
 			// TODO(yshui) isspace is locale aware, be careful
 			log_error("Trailing characters in blur kernel string.");
 			goto err2;
@@ -171,7 +171,7 @@ conv *parse_blur_kern(const char *src, const char **endptr, bool *hasneg) {
 	// Jump over spaces after ';'
 	if (*pc == ';') {
 		pc++;
-		while (*pc && isspace(*pc)) {
+		while (*pc && isspace((unsigned char)*pc)) {
 			++pc;
 		}
 	}
@@ -425,7 +425,7 @@ bool parse_rule_opacity(c2_lptr_t **res, const char *src) {
 	}
 
 	// Skip over spaces
-	while (*endptr && isspace(*endptr))
+	while (*endptr && isspace((unsigned char)*endptr))
 		++endptr;
 	if (':' != *endptr) {
 		log_error("Opacity terminator not found: %s", src);
@@ -505,6 +505,7 @@ void set_default_winopts(options_t *opt, win_option_mask_t *mask, bool shadow_en
 
 char *parse_config(options_t *opt, const char *config_file, bool *shadow_enable,
                    bool *fading_enable, bool *hasneg, win_option_mask_t *winopt_mask) {
+	// clang-format off
 	*opt = (struct options){
 	    .backend = BKEND_XRENDER,
 	    .glx_no_stencil = false,
@@ -536,6 +537,8 @@ char *parse_config(options_t *opt, const char *config_file, bool *shadow_enable,
 	    .shadow_blacklist = NULL,
 	    .shadow_ignore_shaped = false,
 	    .xinerama_shadow_crop = false,
+
+	    .corner_radius = 0,
 
 	    .fade_in_step = 0.028,
 	    .fade_out_step = 0.03,
@@ -572,7 +575,10 @@ char *parse_config(options_t *opt, const char *config_file, bool *shadow_enable,
 	    .no_ewmh_fullscreen = false,
 
 	    .track_leader = false,
+
+	    .rounded_corners_blacklist = NULL
 	};
+	// clang-format on
 
 	char *ret = NULL;
 #ifdef CONFIG_LIBCONFIG
