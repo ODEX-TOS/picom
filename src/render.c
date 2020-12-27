@@ -192,40 +192,40 @@ make_circle(int cx, int cy, int radius, uint32_t max_ntraps, xcb_render_trapezoi
 	double w;
 	while (k < max_ntraps) {
 		y1 = (int)(-radius * cos(M_PI * k / max_ntraps));
-		traps[n].top = (cy + y1) << 16;
-		traps[n].left.p1.y = (cy + y1) << 16;
-		traps[n].right.p1.y = (cy + y1) << 16;
+		traps[n].top = (cy + y1) * 65536;
+		traps[n].left.p1.y = (cy + y1) * 65536;
+		traps[n].right.p1.y = (cy + y1) * 65536;
 		w = sqrt(radius * radius - y1 * y1) * 65536;
-		traps[n].left.p1.x = (int)((cx << 16) - w);
-		traps[n].right.p1.x = (int)((cx << 16) + w);
+		traps[n].left.p1.x = (int)((cx * 65536) - w);
+		traps[n].right.p1.x = (int)((cx * 65536) + w);
 
 		do {
 			k++;
 			y2 = (int)(-radius * cos(M_PI * k / max_ntraps));
 		} while (y1 == y2);
 
-		traps[n].bottom = (cy + y2) << 16;
-		traps[n].left.p2.y = (cy + y2) << 16;
-		traps[n].right.p2.y = (cy + y2) << 16;
+		traps[n].bottom = (cy + y2) * 65536;
+		traps[n].left.p2.y = (cy + y2) * 65536;
+		traps[n].right.p2.y = (cy + y2) * 65536;
 		w = sqrt(radius * radius - y2 * y2) * 65536;
-		traps[n].left.p2.x = (int)((cx << 16) - w);
-		traps[n].right.p2.x = (int)((cx << 16) + w);
+		traps[n].left.p2.x = (int)((cx * 65536) - w);
+		traps[n].right.p2.x = (int)((cx * 65536) + w);
 		n++;
 	}
 	return n;
 }
 
 uint32_t make_rectangle(int x, int y, int wid, int hei, xcb_render_trapezoid_t traps[]) {
-	traps[0].top = y << 16;
-	traps[0].left.p1.y = y << 16;
-	traps[0].left.p1.x = x << 16;
-	traps[0].left.p2.y = (y + hei) << 16;
-	traps[0].left.p2.x = x << 16;
-	traps[0].bottom = (y + hei) << 16;
-	traps[0].right.p1.x = (x + wid) << 16;
-	traps[0].right.p1.y = y << 16;
-	traps[0].right.p2.x = (x + wid) << 16;
-	traps[0].right.p2.y = (y + hei) << 16;
+	traps[0].top = y * 65536;
+	traps[0].left.p1.y = y * 65536;
+	traps[0].left.p1.x = x * 65536;
+	traps[0].left.p2.y = (y + hei) * 65536;
+	traps[0].left.p2.x = x * 65536;
+	traps[0].bottom = (y + hei) * 65536;
+	traps[0].right.p1.x = (x + wid) * 65536;
+	traps[0].right.p1.y = y * 65536;
+	traps[0].right.p2.x = (x + wid) * 65536;
+	traps[0].right.p2.y = (y + hei) * 65536;
 	return 1;
 }
 
@@ -595,7 +595,7 @@ static bool get_root_tile(session_t *ps) {
 	ps->root_tile_fill = false;
 
 	bool fill = false;
-	xcb_pixmap_t pixmap = x_get_root_back_pixmap(ps);
+	xcb_pixmap_t pixmap = x_get_root_back_pixmap(ps->c, ps->root, ps->atoms);
 
 	// Make sure the pixmap we got is valid
 	if (pixmap && !x_validate_pixmap(ps->c, pixmap))
@@ -746,25 +746,33 @@ win_paint_shadow(session_t *ps, struct managed_win *w, region_t *reg_paint) {
 	bool should_clip =
 	    (w->corner_radius > 0) && (!ps->o.wintype_option[w->window_type].full_shadow);
 	if (should_clip) {
-		uint32_t max_ntraps = to_u32_checked(w->corner_radius);
-		xcb_render_trapezoid_t traps[4 * max_ntraps + 3];
-		uint32_t n = make_rounded_window_shape(
-		    traps, max_ntraps, w->corner_radius, w->widthb, w->heightb);
+		if (ps->o.backend == BKEND_XRENDER || ps->o.backend == BKEND_XR_GLX_HYBRID) {
+			uint32_t max_ntraps = to_u32_checked(w->corner_radius);
+			xcb_render_trapezoid_t traps[4 * max_ntraps + 3];
+			uint32_t n = make_rounded_window_shape(
+			    traps, max_ntraps, w->corner_radius, w->widthb, w->heightb);
 
-		td = x_create_picture_with_standard(ps->c, ps->root, w->widthb, w->heightb,
-		                                    XCB_PICT_STANDARD_ARGB_32, 0, 0);
-		xcb_render_color_t trans = {.red = 0, .blue = 0, .green = 0, .alpha = 0};
-		const xcb_rectangle_t rect = {.x = 0,
-		                              .y = 0,
-		                              .width = to_u16_checked(w->widthb),
-		                              .height = to_u16_checked(w->heightb)};
-		xcb_render_fill_rectangles(ps->c, XCB_RENDER_PICT_OP_SRC, td, trans, 1, &rect);
+			td = x_create_picture_with_standard(
+			    ps->c, ps->root, w->widthb, w->heightb,
+			    XCB_PICT_STANDARD_ARGB_32, 0, 0);
+			xcb_render_color_t trans = {
+			    .red = 0, .blue = 0, .green = 0, .alpha = 0};
+			const xcb_rectangle_t rect = {.x = 0,
+			                              .y = 0,
+			                              .width = to_u16_checked(w->widthb),
+			                              .height = to_u16_checked(w->heightb)};
+			xcb_render_fill_rectangles(ps->c, XCB_RENDER_PICT_OP_SRC, td,
+			                           trans, 1, &rect);
 
-		auto solid = solid_picture(ps->c, ps->root, false, 1, 0, 0, 0);
-		xcb_render_trapezoids(ps->c, XCB_RENDER_PICT_OP_OVER, solid, td,
-		                      x_get_pictfmt_for_standard(ps->c, XCB_PICT_STANDARD_A_8),
-		                      0, 0, n, traps);
-		xcb_render_free_picture(ps->c, solid);
+			auto solid = solid_picture(ps->c, ps->root, false, 1, 0, 0, 0);
+			xcb_render_trapezoids(
+			    ps->c, XCB_RENDER_PICT_OP_OVER, solid, td,
+			    x_get_pictfmt_for_standard(ps->c, XCB_PICT_STANDARD_A_8), 0,
+			    0, n, traps);
+			xcb_render_free_picture(ps->c, solid);
+		} else {
+			// Not implemented
+		}
 	}
 
 	clip_t clip = {
@@ -1112,15 +1120,41 @@ void paint_all(session_t *ps, struct managed_win *t, bool ignore_damage) {
 
 		if (pixman_region32_not_empty(&reg_tmp)) {
 			set_tgt_clip(ps, &reg_tmp);
+
+#ifdef CONFIG_OPENGL
+			// If rounded corners backup the region first
+			if (w->corner_radius > 0 && ps->o.backend == BKEND_GLX) {
+				const int16_t x = w->g.x;
+				const int16_t y = w->g.y;
+				const auto wid = to_u16_checked(w->widthb);
+				const auto hei = to_u16_checked(w->heightb);
+				glx_bind_texture(ps, &w->glx_texture_bg, x, y, wid, hei);
+			}
+#endif
+
 			// Blur window background
 			if (w->blur_background &&
 			    (w->mode == WMODE_TRANS ||
 			     (ps->o.blur_background_frame && w->mode == WMODE_FRAME_TRANS) ||
-			     ps->o.force_win_blend))
+			     ps->o.force_win_blend)) {
 				win_blur_background(ps, w, ps->tgt_buffer.pict, &reg_tmp);
+			}
 
 			// Painting the window
 			paint_one(ps, w, &reg_tmp);
+
+#ifdef CONFIG_OPENGL
+			// Rounded corners for XRender is implemented inside render()
+			// Round window corners
+			if (w->corner_radius > 0 && ps->o.backend == BKEND_GLX) {
+				const auto wid = to_u16_checked(w->widthb);
+				const auto hei = to_u16_checked(w->heightb);
+				glx_round_corners_dst(ps, w, w->glx_texture_bg, w->g.x,
+				                      w->g.y, wid, hei,
+				                      (float)ps->psglx->z - 0.5f,
+				                      (float)w->corner_radius, &reg_tmp);
+			}
+#endif
 		}
 	}
 
@@ -1373,6 +1407,18 @@ bool init_render(session_t *ps) {
 			log_error("Failed to create shadow picture.");
 			return false;
 		}
+	}
+
+	// Initialize our rounded corners fragment shader
+	if (ps->o.corner_radius > 0 && ps->o.backend == BKEND_GLX) {
+#ifdef CONFIG_OPENGL
+		if (!glx_init_rounded_corners(ps)) {
+			log_error("Failed to init rounded corners shader.");
+			return false;
+		}
+#else
+		assert(false);
+#endif
 	}
 	return true;
 }

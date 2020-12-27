@@ -9,6 +9,8 @@ The current battle plan of this fork is to refactor it to make the code _possibl
 
 We also try to fix bugs.
 
+You can leave your feedbacks or thoughts in the [discussion tab](https://github.com/yshui/picom/discussions).
+
 The original README can be found [here](README_orig.md)
 
 ## Call for testers
@@ -92,7 +94,7 @@ Assuming you already have all the usual building tools installed (e.g. gcc, pyth
 On Debian based distributions (e.g. Ubuntu), the list of needed packages are
 
 ```
-libxext-dev libxcb1-dev libxcb-damage0-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-render-util0-dev libxcb-render0-dev libxcb-randr0-dev libxcb-composite0-dev libxcb-image0-dev libxcb-present-dev libxcb-xinerama0-dev libxcb-glx0-dev libpixman-1-dev libdbus-1-dev libconfig-dev libgl1-mesa-dev  libpcre2-dev  libevdev-dev uthash-dev libev-dev libx11-xcb-dev
+libxext-dev libxcb1-dev libxcb-damage0-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-render-util0-dev libxcb-render0-dev libxcb-randr0-dev libxcb-composite0-dev libxcb-image0-dev libxcb-present-dev libxcb-xinerama0-dev libxcb-glx0-dev libpixman-1-dev libdbus-1-dev libconfig-dev libgl1-mesa-dev libpcre2-dev libpcre3-dev libevdev-dev uthash-dev libev-dev libx11-xcb-dev
 ```
 
 To build the documents, you need `asciidoc`

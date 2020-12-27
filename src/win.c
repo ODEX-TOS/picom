@@ -472,19 +472,19 @@ void win_process_update_flags(session_t *ps, struct managed_win *w) {
 		// Update window geometry
 		w->g = w->pending_g;
 
+		if (win_check_flags_all(w, WIN_FLAGS_SIZE_STALE)) {
+			win_on_win_size_change(ps, w);
+			win_update_bounding_shape(ps, w);
+			damaged = true;
+			win_clear_flags(w, WIN_FLAGS_SIZE_STALE);
+		}
+
+		if (win_check_flags_all(w, WIN_FLAGS_POSITION_STALE)) {
+			damaged = true;
+			win_clear_flags(w, WIN_FLAGS_POSITION_STALE);
+		}
+
 		win_update_screen(ps->xinerama_nscrs, ps->xinerama_scr_regs, w);
-	}
-
-	if (win_check_flags_all(w, WIN_FLAGS_SIZE_STALE)) {
-		win_on_win_size_change(ps, w);
-		win_update_bounding_shape(ps, w);
-		damaged = true;
-		win_clear_flags(w, WIN_FLAGS_SIZE_STALE);
-	}
-
-	if (win_check_flags_all(w, WIN_FLAGS_POSITION_STALE)) {
-		damaged = true;
-		win_clear_flags(w, WIN_FLAGS_POSITION_STALE);
 	}
 
 	if (win_check_flags_all(w, WIN_FLAGS_PROPERTY_STALE)) {
@@ -676,7 +676,7 @@ static inline bool win_bounding_shaped(const session_t *ps, xcb_window_t wid) {
 
 static wintype_t wid_get_prop_wintype(session_t *ps, xcb_window_t wid) {
 	winprop_t prop =
-	    x_get_prop(ps, wid, ps->atoms->a_NET_WM_WINDOW_TYPE, 32L, XCB_ATOM_ATOM, 32);
+	    x_get_prop(ps->c, wid, ps->atoms->a_NET_WM_WINDOW_TYPE, 32L, XCB_ATOM_ATOM, 32);
 
 	for (unsigned i = 0; i < prop.nitems; ++i) {
 		for (wintype_t j = 1; j < NUM_WINTYPES; ++j) {
@@ -697,7 +697,7 @@ wid_get_opacity_prop(session_t *ps, xcb_window_t wid, opacity_t def, opacity_t *
 	bool ret = false;
 	*out = def;
 
-	winprop_t prop = x_get_prop(ps, wid, ps->atoms->a_NET_WM_WINDOW_OPACITY, 1L,
+	winprop_t prop = x_get_prop(ps->c, wid, ps->atoms->a_NET_WM_WINDOW_OPACITY, 1L,
 	                            XCB_ATOM_CARDINAL, 32);
 
 	if (prop.nitems) {
@@ -846,7 +846,7 @@ bool win_should_fade(session_t *ps, const struct managed_win *w) {
  * The property must be set on the outermost window, usually the WM frame.
  */
 void win_update_prop_shadow_raw(session_t *ps, struct managed_win *w) {
-	winprop_t prop = x_get_prop(ps, w->base.id, ps->atoms->a_COMPTON_SHADOW, 1,
+	winprop_t prop = x_get_prop(ps->c, w->base.id, ps->atoms->a_COMPTON_SHADOW, 1,
 	                            XCB_ATOM_CARDINAL, 32);
 
 	if (!prop.nitems) {
@@ -1649,11 +1649,13 @@ void win_update_leader(session_t *ps, struct managed_win *w) {
 
 	// Read the leader properties
 	if (ps->o.detect_transient && !leader) {
-		leader = wid_get_prop_window(ps, w->client_win, ps->atoms->aWM_TRANSIENT_FOR);
+		leader =
+		    wid_get_prop_window(ps->c, w->client_win, ps->atoms->aWM_TRANSIENT_FOR);
 	}
 
 	if (ps->o.detect_client_leader && !leader) {
-		leader = wid_get_prop_window(ps, w->client_win, ps->atoms->aWM_CLIENT_LEADER);
+		leader =
+		    wid_get_prop_window(ps->c, w->client_win, ps->atoms->aWM_CLIENT_LEADER);
 	}
 
 	win_set_leader(ps, w, leader);
@@ -1910,16 +1912,22 @@ void win_update_opacity_prop(session_t *ps, struct managed_win *w) {
  * Retrieve frame extents from a window.
  */
 void win_update_frame_extents(session_t *ps, struct managed_win *w, xcb_window_t client) {
-	winprop_t prop = x_get_prop(ps, client, ps->atoms->a_NET_FRAME_EXTENTS, 4L,
+	winprop_t prop = x_get_prop(ps->c, client, ps->atoms->a_NET_FRAME_EXTENTS, 4L,
 	                            XCB_ATOM_CARDINAL, 32);
 
 	if (prop.nitems == 4) {
-		const int32_t extents[4] = {
-		    to_int_checked(prop.c32[0]),
-		    to_int_checked(prop.c32[1]),
-		    to_int_checked(prop.c32[2]),
-		    to_int_checked(prop.c32[3]),
-		};
+		int extents[4];
+		for (int i = 0; i < 4; i++) {
+			if (prop.c32[i] > (uint32_t)INT_MAX) {
+				log_warn("Your window manager sets a absurd "
+				         "_NET_FRAME_EXTENTS value (%u), ignoring it.",
+				         prop.c32[i]);
+				memset(extents, 0, sizeof(extents));
+				break;
+			}
+			extents[i] = (int)prop.c32[i];
+		}
+
 		const bool changed = w->frame_extents.left != extents[0] ||
 		                     w->frame_extents.right != extents[1] ||
 		                     w->frame_extents.top != extents[2] ||
@@ -2327,12 +2335,15 @@ void win_update_screen(int nscreens, region_t *screens, struct managed_win *w) {
 		if (e->x1 <= w->g.x && e->y1 <= w->g.y && e->x2 >= w->g.x + w->widthb &&
 		    e->y2 >= w->g.y + w->heightb) {
 			w->xinerama_scr = i;
-			log_debug("Window %#010x (%s), %dx%d+%dx%d, is on screen %d",
-			          w->base.id, w->name, w->g.x, w->g.y, w->g.width,
-			          w->g.height, i);
+			log_debug("Window %#010x (%s), %dx%d+%dx%d, is on screen %d "
+			          "(%dx%d+%dx%d)",
+			          w->base.id, w->name, w->g.x, w->g.y, w->widthb, w->heightb,
+			          i, e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1);
 			return;
 		}
 	}
+	log_debug("Window %#010x (%s), %dx%d+%dx%d, is not contained by any screen",
+	          w->base.id, w->name, w->g.x, w->g.y, w->g.width, w->g.height);
 }
 
 /// Map an already registered window
@@ -2693,7 +2704,7 @@ bool win_is_fullscreen(const session_t *ps, const struct managed_win *w) {
 bool win_is_bypassing_compositor(const session_t *ps, const struct managed_win *w) {
 	bool ret = false;
 
-	auto prop = x_get_prop(ps, w->client_win, ps->atoms->a_NET_WM_BYPASS_COMPOSITOR,
+	auto prop = x_get_prop(ps->c, w->client_win, ps->atoms->a_NET_WM_BYPASS_COMPOSITOR,
 	                       1L, XCB_ATOM_CARDINAL, 32);
 
 	if (prop.nitems && *prop.c32 == 1) {
